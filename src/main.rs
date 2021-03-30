@@ -124,3 +124,33 @@ impl<'a> Entry<'a> {
         })
     }
 }
+
+#[test]
+fn test_entry_with_not_enougth_args() {
+    match Entry::from_str("0x0:name") {
+        Ok(_) => assert!(false),
+        Err(AppError::NumberOfArgs) => assert!(true),
+        Err(_) => assert!(false),
+    }
+}
+
+#[test]
+fn test_entry_without_func() {
+    match Entry::from_str("0x0:name:") {
+        Ok(_) => assert!(false),
+        Err(AppError::Func) => assert!(true),
+        Err(_) => assert!(false),
+    }
+}
+
+#[test]
+fn test_entry_address() -> Result<(), AppError> {
+    match Entry::from_str("0xads:name:func") {
+        Ok(_) => assert!(false),
+        Err(AppError::Address) => assert!(true),
+        Err(_) => assert!(false),
+    }
+    assert!(Entry::from_str("0x20:name:func")?.addr == 0x20);
+    assert!(Entry::from_str("100:name:func")?.addr == 100);
+    Ok(())
+}
