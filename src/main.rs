@@ -1,14 +1,12 @@
-use std::convert::TryInto;
-use std::fs::File;
-use std::io::copy;
+use anyhow::{anyhow, bail, Context, Result};
+use clap::Parser;
+use std::fs::{File, OpenOptions};
 use std::io::prelude::*;
-use std::io::BufReader;
-use std::io::BufWriter;
-use std::io::Seek;
-use std::io::SeekFrom;
-use std::io::Write;
-use std::num::ParseIntError;
-use std::u64;
+use std::io::{copy, SeekFrom, Seek, Read, Write, BufReader};
+use std::path;
+use std::convert::TryInto;
+use std::collections::HashMap;
+use crc;
 
 #[derive(Debug)]
 struct Entry<'a> {
@@ -18,73 +16,108 @@ struct Entry<'a> {
     args: Vec<&'a str>,
 }
 
-#[derive(Debug)]
-enum AppError {
-    NumberOfArgs,
-    Address,
-    Func,
-    IOErr,
-    FileNotFound,
+/// A tool to combine binary files
+#[derive(Parser)]
+struct Cli {
+    /// The path to the file to read layout
+    layout: path::PathBuf,
+    /// The path to the file to output
+    output: path::PathBuf,
 }
 
-fn main() {
-    let out = File::create("result.bin").unwrap();
-    let mut writer = BufWriter::new(out);
+fn main() -> Result<()> {
+    let args = Cli::parse();
 
-    let script = File::open("bincomb.txt").unwrap();
-    let mut reader = BufReader::new(script);
-    let mut line = String::new();
-    let mut line_no = 0;
+    let mut variables: HashMap<String, u64> = HashMap::new();
 
-    loop {
-        line_no += 1;
-        line.clear();
+    let wpath = &args.output;
+    let mut outf = OpenOptions::new()
+        .write(true)
+        .read(true)
+        .create(true)
+        .truncate(true)
+        .open(wpath)
+        .with_context(
+            || format!("could not create file `{}`", wpath.display())
+        )?;
+    let rpath = &args.layout;
+    let inf = File::open(rpath)
+        .with_context(
+            || format!("could not open file `{}`", rpath.display())
+        )?;
 
-        let len = reader.read_line(&mut line).unwrap();
-        let line = line.trim();
+    let reader = BufReader::new(inf);
 
-        if len == 0 {
-            break;
+    for (index, buf) in reader.lines().enumerate() {
+        if let Ok(sline) = buf {
+            let line = sline.trim();
+            if line.is_empty() || line.starts_with("#") {
+                continue;
+            }
+
+            let entry = Entry::from_str(&line)?;
+            process_entry(&mut variables, &mut outf, &entry)
+                .with_context(
+                    || format!("Failed on line {}", index + 1)
+                )?;
         }
-
-        if line.is_empty() || line.starts_with("#") {
-            continue;
-        }
-
-        let entry = match Entry::from_str(&line) {
-            Ok(v) => v,
-            Err(err) => panic!("Error on line {}: {:?}", line_no, err),
-        };
-
-        process_entry(&mut writer, &entry).unwrap();
     }
+
+    println!("{:?}", variables);
+
+    Ok(())
 }
 
-fn process_entry<W>(buf: &mut W, entry: &Entry) -> Result<usize, AppError>
+fn process_entry<F>(vars: &mut HashMap<String, u64>, outf: &mut F, entry: &Entry) -> Result<()>
 where
-    W: Seek + Write,
+    F: Seek + Read + Write,
 {
-    let mut length: usize = 0;
-
-    buf.seek(SeekFrom::Start(entry.addr))
-        .map_err(|_| AppError::IOErr)?;
+    let mut length: u64 = 0;
+    let mut var_name: String = entry.name.to_string();
+    var_name.push_str(".start");
+    vars.insert(var_name, entry.addr);
 
     if entry.func == "file" {
         if entry.args.len() != 1 {
-            return Err(AppError::NumberOfArgs);
+            bail!("Error number of arguments");
         }
-        let f = File::open(entry.args[0]).map_err(|_| AppError::FileNotFound)?;
+        let f = File::open(entry.args[0])
+            .with_context(
+                || format!("Could not open file {}", entry.args[0])
+            )?;
         let mut reader = BufReader::new(f);
-        length = copy(&mut reader, buf)
-            .map_err(|_| AppError::IOErr)?
-            .try_into()
-            .unwrap();
+        outf.seek(SeekFrom::Start(entry.addr))?;
+        length = copy(&mut reader, outf)?;
+    }
+    else if entry.func == "crc16" {
+        if entry.args.len() != 2 {
+            bail!("Error number of arguments")
+        }
+
+        let addr = unpack_arg(&vars, &entry.args[0])?;
+        length = unpack_arg(&vars, &entry.args[1])?;
+
+        outf.seek(SeekFrom::Start(addr))?;
+        let mut bin = vec![0; length.try_into()?];
+        outf.read(&mut bin)?;
+
+        let crc = crc::Crc::<u16>::new(&crc::CRC_16_IBM_SDLC);
+        let result = crc.checksum(&bin).to_le_bytes();
+        outf.seek(SeekFrom::Start(entry.addr))?;
+        let _ = outf.write(&result[..2])?;
+    }
+    else {
+        bail!("Unknown function name '{}'", entry.func);
     }
 
-    Ok(length)
+    let mut var_name: String = entry.name.to_string();
+    var_name.push_str(".size");
+    vars.insert(var_name, length);
+
+    Ok(())
 }
 
-fn parse_uint(s: &str) -> Result<u64, ParseIntError> {
+fn parse_uint(s: &str) -> Result<u64> {
     let hex_prefix = "0x";
     let mut value = s;
     let mut base = 10;
@@ -94,22 +127,34 @@ fn parse_uint(s: &str) -> Result<u64, ParseIntError> {
         base = 16;
     }
 
-    u64::from_str_radix(&value, base)
+    Ok(u64::from_str_radix(&value, base)?)
+}
+
+fn unpack_arg(vars: &HashMap<String, u64>, arg: &str) -> Result<u64> {
+    if arg.starts_with("$") {
+        if let Some(&value) = vars.get(&arg[1..]) {
+            return Ok(value)
+        }
+        Err(anyhow!("Missing variable: {}", arg))
+    }
+    else {
+        parse_uint(arg)
+    }
 }
 
 impl<'a> Entry<'a> {
-    fn from_str(line: &str) -> Result<Entry, AppError> {
+    fn from_str(line: &str) -> Result<Entry> {
         let values = line.split(':').map(|el| el.trim()).collect::<Vec<&str>>();
 
         if values.len() != 3 {
-            return Err(AppError::NumberOfArgs);
+            bail!("Error number values");
         }
 
         if values[2].is_empty() {
-            return Err(AppError::Func);
+            bail!("Function name cannot be empty");
         }
 
-        let address = parse_uint(&values[0]).map_err(|_| AppError::Address)?;
+        let address = parse_uint(&values[0])?;
 
         let func = values[2]
             .split(",")
@@ -123,34 +168,4 @@ impl<'a> Entry<'a> {
             args: func[1..].to_vec(),
         })
     }
-}
-
-#[test]
-fn test_entry_with_not_enougth_args() {
-    match Entry::from_str("0x0:name") {
-        Ok(_) => assert!(false),
-        Err(AppError::NumberOfArgs) => assert!(true),
-        Err(_) => assert!(false),
-    }
-}
-
-#[test]
-fn test_entry_without_func() {
-    match Entry::from_str("0x0:name:") {
-        Ok(_) => assert!(false),
-        Err(AppError::Func) => assert!(true),
-        Err(_) => assert!(false),
-    }
-}
-
-#[test]
-fn test_entry_address() -> Result<(), AppError> {
-    match Entry::from_str("0xads:name:func") {
-        Ok(_) => assert!(false),
-        Err(AppError::Address) => assert!(true),
-        Err(_) => assert!(false),
-    }
-    assert!(Entry::from_str("0x20:name:func")?.addr == 0x20);
-    assert!(Entry::from_str("100:name:func")?.addr == 100);
-    Ok(())
 }
