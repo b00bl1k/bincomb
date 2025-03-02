@@ -1,20 +1,17 @@
-use anyhow::{anyhow, bail, Context, Result};
+
+use anyhow::{bail, Context, Result};
 use clap::Parser;
-use std::fs::{File, OpenOptions};
+use std::path;
+use std::fs::{File};
 use std::io::prelude::*;
 use std::io::{copy, SeekFrom, Seek, Read, Write, BufReader};
-use std::path;
-use std::convert::TryInto;
 use std::collections::HashMap;
+use std::fs::OpenOptions;
+use std::convert::TryInto;
 use crc;
 
-#[derive(Debug)]
-struct Entry<'a> {
-    addr: u64,
-    name: &'a str,
-    func: &'a str,
-    args: Vec<&'a str>,
-}
+mod lexer;
+mod parser;
 
 /// A tool to combine binary files
 #[derive(Parser)]
@@ -28,8 +25,15 @@ struct Cli {
 fn main() -> Result<()> {
     let args = Cli::parse();
 
-    let mut variables: HashMap<String, u64> = HashMap::new();
+    let rpath = &args.layout;
+    let inf = File::open(rpath)
+        .with_context(
+            || format!("could not open file `{}`", rpath.display())
+        )?;
 
+    let reader = BufReader::new(inf);
+
+    let mut variables: HashMap<String, usize> = HashMap::new();
     let wpath = &args.output;
     let mut outf = OpenOptions::new()
         .write(true)
@@ -40,132 +44,116 @@ fn main() -> Result<()> {
         .with_context(
             || format!("could not create file `{}`", wpath.display())
         )?;
-    let rpath = &args.layout;
-    let inf = File::open(rpath)
-        .with_context(
-            || format!("could not open file `{}`", rpath.display())
-        )?;
-
-    let reader = BufReader::new(inf);
 
     for (index, buf) in reader.lines().enumerate() {
         if let Ok(sline) = buf {
-            let line = sline.trim();
-            if line.is_empty() || line.starts_with("#") {
-                continue;
-            }
+            let line_no = index + 1;
+            let lex = lexer::Lexer::new(&sline);
+            let arr: Result<Vec<lexer::Token>> = lex.collect();
+            let tokens: Vec<lexer::Token> = arr
+                .with_context(|| format!("line {line_no}"))?;
 
-            let entry = Entry::from_str(&line)?;
-            process_entry(&mut variables, &mut outf, &entry)
-                .with_context(
-                    || format!("Failed on line {}", index + 1)
-                )?;
+            let mut parser = parser::Parser::new(&tokens);
+            let expr = parser.parse();
+            if let Some(e) = expr {
+                interpret(&mut variables, &mut outf, e?)
+                    .with_context(|| format!("line {line_no}"))?;
+            }
         }
     }
-
-    println!("{:?}", variables);
-
     Ok(())
 }
 
-fn process_entry<F>(vars: &mut HashMap<String, u64>, outf: &mut F, entry: &Entry) -> Result<()>
+fn evaluate(vars: &HashMap<String, usize>, expr: &parser::Expr) -> Result<usize> {
+    match expr {
+        parser::Expr::Literal(value) => Ok(*value),
+        parser::Expr::Variable(name) => {
+            if let Some(value) = vars.get(name) {
+                Ok(*value)
+            }
+            else {
+                bail!("Undefined variable {name}");
+            }
+        },
+        parser::Expr::Binary {
+            op: lexer::Token::Add,
+            left,
+            right,
+        } => {
+            let op1 = evaluate(vars, left)?;
+            let op2 = evaluate(vars, right)?;
+            Ok(op1 + op2)
+        },
+        parser::Expr::Binary {
+            op: lexer::Token::Sub,
+            left,
+            right,
+        } => {
+            let op1 = evaluate(vars, left)?;
+            let op2 = evaluate(vars, right)?;
+            Ok(op1 - op2)
+        },
+        _ => bail!("Invalid expression"),
+    }
+}
+
+fn interpret<F>(vars: &mut HashMap<String, usize>, outf: &mut F, expr: parser::Expr) -> Result<()>
 where
     F: Seek + Read + Write,
 {
-    let mut length: u64 = 0;
-    let mut var_name: String = entry.name.to_string();
-    var_name.push_str(".start");
-    vars.insert(var_name, entry.addr);
+    let mut length: usize = 0;
 
-    if entry.func == "file" {
-        if entry.args.len() != 1 {
-            bail!("Error number of arguments");
+    if let parser::Expr::Statement {offset, variable, func} = expr {
+        let pos = evaluate(vars, &offset)?;
+        if let parser::Expr::Call {callee, args} = *func {
+            if callee == "file" {
+                if args.len() != 1 {
+                    bail!("Error number of arguments");
+                }
+                if let parser::Expr::Str(path) = &args[0] {
+                    let f = File::open(path.to_string())
+                        .with_context(
+                            || format!("Could not open file {path}")
+                        )?;
+                    let mut reader = BufReader::new(f);
+                    outf.seek(SeekFrom::Start(pos.try_into()?))?;
+                    length = copy(&mut reader, outf)?.try_into()?;
+                }
+            }
+            else if callee == "crc16" {
+                if args.len() != 2 {
+                    bail!("Error number of arguments")
+                }
+                let addr = evaluate(vars, &args[0])?;
+                length = evaluate(vars, &args[1])?;
+
+                outf.seek(SeekFrom::Start(addr.try_into()?))?;
+                let mut bin = vec![0; length.try_into()?];
+                outf.read(&mut bin)?;
+
+                let crc = crc::Crc::<u16>::new(&crc::CRC_16_IBM_SDLC);
+                let result = crc.checksum(&bin).to_le_bytes();
+                outf.seek(SeekFrom::Start(pos.try_into()?))?;
+                let _ = outf.write(&result[..2])?;
+            }
+            else {
+                bail!("Unknown function name '{}'", callee);
+            }
+
+            let mut var: String = variable.to_string();
+            var.push_str(".start");
+            vars.insert(var, pos);
+
+            let mut var: String = variable.to_string();
+            var.push_str(".size");
+            vars.insert(var, length);
+
+            let mut var: String = variable.to_string();
+            var.push_str(".end");
+            vars.insert(var, pos + length);
+
+            return Ok(());
         }
-        let f = File::open(entry.args[0])
-            .with_context(
-                || format!("Could not open file {}", entry.args[0])
-            )?;
-        let mut reader = BufReader::new(f);
-        outf.seek(SeekFrom::Start(entry.addr))?;
-        length = copy(&mut reader, outf)?;
     }
-    else if entry.func == "crc16" {
-        if entry.args.len() != 2 {
-            bail!("Error number of arguments")
-        }
-
-        let addr = unpack_arg(&vars, &entry.args[0])?;
-        length = unpack_arg(&vars, &entry.args[1])?;
-
-        outf.seek(SeekFrom::Start(addr))?;
-        let mut bin = vec![0; length.try_into()?];
-        outf.read(&mut bin)?;
-
-        let crc = crc::Crc::<u16>::new(&crc::CRC_16_IBM_SDLC);
-        let result = crc.checksum(&bin).to_le_bytes();
-        outf.seek(SeekFrom::Start(entry.addr))?;
-        let _ = outf.write(&result[..2])?;
-    }
-    else {
-        bail!("Unknown function name '{}'", entry.func);
-    }
-
-    let mut var_name: String = entry.name.to_string();
-    var_name.push_str(".size");
-    vars.insert(var_name, length);
-
-    Ok(())
-}
-
-fn parse_uint(s: &str) -> Result<u64> {
-    let hex_prefix = "0x";
-    let mut value = s;
-    let mut base = 10;
-
-    if s.starts_with(hex_prefix) {
-        value = &value[2..];
-        base = 16;
-    }
-
-    Ok(u64::from_str_radix(&value, base)?)
-}
-
-fn unpack_arg(vars: &HashMap<String, u64>, arg: &str) -> Result<u64> {
-    if arg.starts_with("$") {
-        if let Some(&value) = vars.get(&arg[1..]) {
-            return Ok(value)
-        }
-        Err(anyhow!("Missing variable: {}", arg))
-    }
-    else {
-        parse_uint(arg)
-    }
-}
-
-impl<'a> Entry<'a> {
-    fn from_str(line: &str) -> Result<Entry> {
-        let values = line.split(':').map(|el| el.trim()).collect::<Vec<&str>>();
-
-        if values.len() != 3 {
-            bail!("Error number values");
-        }
-
-        if values[2].is_empty() {
-            bail!("Function name cannot be empty");
-        }
-
-        let address = parse_uint(&values[0])?;
-
-        let func = values[2]
-            .split(",")
-            .map(|el| el.trim())
-            .collect::<Vec<&str>>();
-
-        Ok(Entry {
-            addr: address,
-            name: &values[1],
-            func: &func[0],
-            args: func[1..].to_vec(),
-        })
-    }
+    bail!("Invalid statement");
 }
