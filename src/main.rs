@@ -22,7 +22,8 @@ struct Cli {
     output: path::PathBuf,
 }
 
-fn main() -> Result<()> {
+fn main() -> Result<()>
+{
     let args = Cli::parse();
 
     let rpath = &args.layout;
@@ -64,7 +65,8 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn evaluate(vars: &HashMap<String, usize>, expr: &parser::Expr) -> Result<usize> {
+fn evaluate(vars: &HashMap<String, usize>, expr: &parser::Expr) -> Result<usize>
+{
     match expr {
         parser::Expr::Literal(value) => Ok(*value),
         parser::Expr::Variable(name) => {
@@ -97,7 +99,8 @@ fn evaluate(vars: &HashMap<String, usize>, expr: &parser::Expr) -> Result<usize>
     }
 }
 
-fn interpret<F>(vars: &mut HashMap<String, usize>, outf: &mut F, expr: parser::Expr) -> Result<()>
+fn interpret<F>(vars: &mut HashMap<String, usize>, outf: &mut F,
+                expr: parser::Expr) -> Result<()>
 where
     F: Seek + Read + Write,
 {
@@ -140,20 +143,27 @@ where
                 bail!("Unknown function name '{}'", callee);
             }
 
-            let mut var: String = variable.to_string();
-            var.push_str(".start");
-            vars.insert(var, pos);
-
-            let mut var: String = variable.to_string();
-            var.push_str(".size");
-            vars.insert(var, length);
-
-            let mut var: String = variable.to_string();
-            var.push_str(".end");
-            vars.insert(var, pos + length);
+            add_variables(vars, &variable, pos, length)?;
 
             return Ok(());
         }
     }
     bail!("Invalid statement");
+}
+
+fn add_variables(vars: &mut HashMap<String, usize>, name: &str, addr: usize,
+                 size: usize) -> Result<()>
+{
+    if name != "_" {
+        let key_start = format!("{name}.start");
+        if vars.contains_key(&key_start) {
+            bail!("Variables with name '{name}' already defined");
+        }
+
+        vars.insert(key_start, addr);
+        vars.insert(format!("{name}.size"), size);
+        vars.insert(format!("{name}.end"), addr + size);
+    }
+
+    Ok(())
 }

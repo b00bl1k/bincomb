@@ -8,7 +8,7 @@ the output file, such as a CRC.
 
 ```
 script     -> statement* EOF ;
-statement  -> expr ":" IDENT ":" IDENT args? EOL ;
+statement  -> expr ":" IDENT ":" IDENT args* EOL ;
 args       -> expr ( "," expr )* ;
 expr       -> term ;
 term       -> primary ( ( "-" | "+" ) primary )* ;

@@ -205,12 +205,3 @@ impl fmt::Display for Expr {
     }
 }
 
-
-// https://github.com/jonhoo/lox/blob/master/src/parse.rs
-// pub fn parse(tokens: &mut Peekable<Lexer>) {
-//    let item = tokens.peek();
-//    if let Some(Ok(t)) = item {
-//        println!("{}", t);
-//    }
-//}
-
