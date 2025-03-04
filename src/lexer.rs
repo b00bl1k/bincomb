@@ -242,3 +242,33 @@ impl<'a> Iterator for Lexer<'a>
     }
 }
 
+#[cfg(test)]
+mod tests
+{
+    use super::*;
+    use std::matches;
+
+    #[test]
+    fn scan_simple_tokens()
+    {
+        let mut iter = Lexer::new("+ - : , $ .").into_iter();
+        assert!(matches!(iter.next(), Some(Ok(Token::Add))));
+        assert!(matches!(iter.next(), Some(Ok(Token::Sub))));
+        assert!(matches!(iter.next(), Some(Ok(Token::Semicolon))));
+        assert!(matches!(iter.next(), Some(Ok(Token::Comma))));
+        assert!(matches!(iter.next(), Some(Ok(Token::Dollar))));
+        assert!(matches!(iter.next(), Some(Ok(Token::Dot))));
+        assert!(matches!(iter.next(), Some(Ok(Token::Eol))));
+        assert!(matches!(iter.next(), None));
+    }
+
+    #[test]
+    fn scan_strings()
+    {
+        let mut iter = Lexer::new("\"hello\"").into_iter();
+        assert!(matches!(iter.next(), Some(Ok(Token::Str(x))) if x == "hello"));
+        assert!(matches!(iter.next(), Some(Ok(Token::Eol))));
+        assert!(matches!(iter.next(), None));
+    }
+}
+
