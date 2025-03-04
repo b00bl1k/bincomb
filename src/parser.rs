@@ -8,6 +8,7 @@ pub enum Expr {
     Binary { op: Token, left: Box<Expr>, right: Box<Expr> },
     Call { callee: String, args: Vec<Expr> },
     Variable(String),
+    Const(String),
     Str(String),
     Literal(usize),
 }
@@ -114,7 +115,7 @@ impl<'a> Parser<'a> {
                     left: Box::new(expr),
                     right: Box::new(self.expr()?)
                 })
-            }
+            },
             Some(Token::Sub) => {
                 self.current += 1;
                 Ok(Expr::Binary {
@@ -134,6 +135,9 @@ impl<'a> Parser<'a> {
             },
             Some(Token::Str(value)) => {
                 Expr::Str(value.to_string())
+            },
+            Some(Token::Const(name)) => {
+                Expr::Const(name.to_string())
             },
             Some(Token::Dollar) => return self.variable(),
             _ => bail!("Unexpected primary token"),
@@ -176,6 +180,7 @@ impl fmt::Display for Expr {
         match self {
             Expr::Literal(value) => write!(f, "{value}"),
             Expr::Variable(name) => write!(f, "${name}"),
+            Expr::Const(name) => write!(f, "{name}"),
             Expr::Str(value) => write!(f, "'{value}'"),
             Expr::Binary {
                 op,

@@ -12,8 +12,9 @@ statement  -> expr ":" IDENT ":" IDENT args* EOL ;
 args       -> expr ( "," expr )* ;
 expr       -> term ;
 term       -> primary ( ( "-" | "+" ) primary )* ;
-primary    -> NUMBER | STRING | variable ;
+primary    -> NUMBER | STRING | variable | const ;
 variable   -> "$" IDENT "." IDENT ;
+const      -> CONST ;
 ```
 
 ## Example

@@ -1,7 +1,8 @@
 use std::fmt;
 use anyhow::{anyhow, bail, Result};
 
-pub enum Token {
+pub enum Token
+{
     Add,
     Sub,
     Comma,
@@ -9,20 +10,24 @@ pub enum Token {
     Dollar,
     Dot,
     Ident(String),
+    Const(String),
     Str(String),
     Num(usize),
     Eol,
 }
 
-pub struct Lexer<'a> {
+pub struct Lexer<'a>
+{
     line: &'a str,
     start: usize,
     current: usize,
     eol: bool,
 }
 
-impl<'a> Lexer<'a> {
-    pub fn new(input: &'a str) -> Self {
+impl<'a> Lexer<'a>
+{
+    pub fn new(input: &'a str) -> Self
+    {
         Self {
             line: input,
             start: 0,
@@ -31,11 +36,13 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn is_eol(&self) -> bool {
+    fn is_eol(&self) -> bool
+    {
         self.eol
     }
 
-    fn advance(&mut self) -> Option<char> {
+    fn advance(&mut self) -> Option<char>
+    {
         if let Some(c) = self.line[self.current..].chars().next() {
             self.current += c.len_utf8();
             Some(c)
@@ -46,32 +53,44 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn move_curr(&mut self, c: char) {
+    fn move_curr(&mut self, c: char)
+    {
         self.current += c.len_utf8();
     }
 
-    fn peek(&self) -> Option<char> {
+    fn peek(&self) -> Option<char>
+    {
         let c = self.line[self.current..].chars().next()?;
         Some(c)
     }
 
-    fn is_digit(&self, c: char) -> bool {
+    fn is_digit(&self, c: char) -> bool
+    {
         c >= '0' && c <= '9'
     }
 
-    fn is_hex_digit(&self, c: char) -> bool {
+    fn is_hex_digit(&self, c: char) -> bool
+    {
         self.is_digit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
     }
 
-    fn is_alpha(&self, c: char) -> bool {
+    fn is_cap_alpha(&self, c: char) -> bool
+    {
+        (c >= 'A' && c <= 'Z') || c == '_'
+    }
+
+    fn is_alpha(&self, c: char) -> bool
+    {
         (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'
     }
 
-    fn is_alpha_numeric(&self, c: char) -> bool {
+    fn is_alpha_numeric(&self, c: char) -> bool
+    {
         self.is_alpha(c) || self.is_digit(c)
     }
 
-    fn identifier(&mut self) -> Result<Token> {
+    fn identifier(&mut self) -> Result<Token>
+    {
         loop {
             if let Some(c) = self.peek() {
                 if self.is_alpha_numeric(c) {
@@ -85,7 +104,22 @@ impl<'a> Lexer<'a> {
         Ok(Token::Ident(name))
     }
 
-    fn string(&mut self) -> Result<Token> {
+    fn constant(&mut self) -> Result<Token>
+    {
+        while let Some(c) = self.peek() {
+            if self.is_cap_alpha(c) {
+                self.move_curr(c);
+            }
+            else {
+                break;
+            }
+        }
+        let name = self.line[self.start..self.current].to_string();
+        Ok(Token::Const(name))
+    }
+
+    fn string(&mut self) -> Result<Token>
+    {
         loop {
             if let Some(c) = self.peek() {
                 if c != '"' {
@@ -103,7 +137,8 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn integer(&mut self) -> Result<Token> {
+    fn integer(&mut self) -> Result<Token>
+    {
         loop {
             if let Some(c) = self.peek() {
                 if self.is_digit(c) {
@@ -117,7 +152,8 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn integer_hex(&mut self) -> Result<Token> {
+    fn integer_hex(&mut self) -> Result<Token>
+    {
         loop {
             if let Some(c) = self.peek() {
                 if self.is_hex_digit(c) {
@@ -131,7 +167,8 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn probe_hex(&mut self) -> Result<Token> {
+    fn probe_hex(&mut self) -> Result<Token>
+    {
         if let Some(c) = self.peek() {
             if c == 'x' {
                 self.move_curr(c);
@@ -142,14 +179,17 @@ impl<'a> Lexer<'a> {
         self.integer()
     }
 
-    fn comment(&mut self) -> Result<Token> {
+    fn comment(&mut self) -> Result<Token>
+    {
         self.eol = true;
         Ok(Token::Eol)
     }
 }
 
-impl fmt::Display for Token {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+impl fmt::Display for Token
+{
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result
+    {
         match *self {
             Token::Add => write!(f, "ADD"),
             Token::Sub => write!(f, "SUB"),
@@ -159,16 +199,19 @@ impl fmt::Display for Token {
             Token::Dot => write!(f, "DOT"),
             Token::Str(ref value) => write!(f, "STR {value}"),
             Token::Ident(ref name) => write!(f, "IDENT {name}"),
+            Token::Const(ref name) => write!(f, "CONST {name}"),
             Token::Num(value) => write!(f, "INT {value}"),
             Token::Eol => write!(f, "EOL"),
         }
     }
 }
 
-impl<'a> Iterator for Lexer<'a> {
+impl<'a> Iterator for Lexer<'a>
+{
     type Item = Result<Token>;
 
-    fn next(&mut self) -> Option<Self::Item> {
+    fn next(&mut self) -> Option<Self::Item>
+    {
         if self.is_eol() {
             return None;
         }
@@ -191,7 +234,8 @@ impl<'a> Iterator for Lexer<'a> {
                 '#' => Some(self.comment()),
                 '0' => Some(self.probe_hex()),
                 '1'..='9' => Some(self.integer()),
-                'a'..='z' | 'A'..='Z' | '_' => Some(self.identifier()),
+                'A'..='Z' => Some(self.constant()),
+                'a'..='z' | '_' => Some(self.identifier()),
                 _ => Some(Err(anyhow!("Unknown character '{}'", ch))),
             }
         }
