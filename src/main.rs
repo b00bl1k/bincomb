@@ -154,6 +154,10 @@ where
         if let parser::Expr::Call {callee, args} = *func {
             let length = match callee.as_str() {
                 "file" => func_file(consts, &args, pos, outf)?,
+                "url" => func_url(consts, &args, pos, outf)?,
+                "u32" => func_u32(consts, vars, &args, pos, outf)?,
+                "u16" => func_u16(consts, vars, &args, pos, outf)?,
+                "u8" => func_u8(consts, vars, &args, pos, outf)?,
                 "crc16" => func_crc16(consts, vars, &args, pos, outf)?,
                 _ => bail!("Unknown function name '{callee}'")
             };
@@ -209,6 +213,29 @@ where
     Ok(length)
 }
 
+fn func_url<F>(consts: &HashMap<String, String>,
+               args: &[parser::Expr],
+               offset: usize,
+               outf: &mut F) -> Result<usize>
+where
+    F: Seek + Read + Write,
+{
+    if args.len() != 1 {
+        bail!("Error number of arguments");
+    }
+    let url = match &args[0] {
+        parser::Expr::Str(value) => value,
+        parser::Expr::Const(name) => consts.get(name)
+            .ok_or(anyhow!("Undefined constant {name}"))?,
+        _ => bail!("Expected string or constant")
+    };
+    let resp = reqwest::blocking::get(url)?.error_for_status()?;
+    let mut reader = BufReader::new(resp);
+    outf.seek(SeekFrom::Start(offset.try_into()?))?;
+    let length = copy(&mut reader, outf)?.try_into()?;
+    Ok(length)
+}
+
 fn func_crc16<F>(consts: &HashMap<String, String>,
                  vars: &mut HashMap<String, usize>,
                  args: &[parser::Expr],
@@ -217,21 +244,96 @@ fn func_crc16<F>(consts: &HashMap<String, String>,
 where
     F: Seek + Read + Write,
 {
-    if args.len() != 2 {
+    const ALGOS: &[(&str, &crc::Algorithm<u16>)] = &[
+        ("ibm_sdlc", &crc::CRC_16_IBM_SDLC),
+        ("modbus", &crc::CRC_16_MODBUS),
+    ];
+
+    if args.len() != 3 {
         bail!("Error number of arguments")
     }
-    let addr = evaluate(consts, vars, &args[0])?;
-    let length = evaluate(consts, vars, &args[1])?;
+
+    let algo_name = match &args[0] {
+        parser::Expr::Str(value) => value,
+        parser::Expr::Const(name) => consts.get(name)
+            .ok_or(anyhow!("Undefined constant {name}"))?,
+        _ => bail!("Expected string or constant")
+    };
+
+    let addr = evaluate(consts, vars, &args[1])?;
+    let length = evaluate(consts, vars, &args[2])?;
 
     outf.seek(SeekFrom::Start(addr.try_into()?))?;
     let mut bin = vec![0; length.try_into()?];
     outf.read(&mut bin)?;
 
-    let crc = crc::Crc::<u16>::new(&crc::CRC_16_IBM_SDLC);
-    let result = crc.checksum(&bin).to_le_bytes();
-    outf.seek(SeekFrom::Start(offset.try_into()?))?;
-    let _ = outf.write(&result[..2])?;
+    for &algo in ALGOS {
+        if algo.0 == algo_name {
+            let crc = crc::Crc::<u16>::new(&algo.1);
+            let bytes = crc.checksum(&bin).to_le_bytes();
+            outf.seek(SeekFrom::Start(offset.try_into()?))?;
+            let _ = outf.write(&bytes)?;
+            return Ok(bytes.len());
+        }
+    }
 
-    Ok(length)
+    bail!("Unknown algorithm name '{algo_name}'");
+}
+
+fn func_u32<F>(consts: &HashMap<String, String>,
+               vars: &mut HashMap<String, usize>,
+               args: &[parser::Expr],
+               offset: usize,
+               outf: &mut F) -> Result<usize>
+where
+    F: Seek + Read + Write,
+{
+    if args.len() != 1 {
+        bail!("Error number of arguments")
+    }
+
+    let value: u32 = evaluate(consts, vars, &args[0])?.try_into()?;
+    let bytes = value.to_le_bytes();
+    outf.seek(SeekFrom::Start(offset.try_into()?))?;
+    let _ = outf.write(&bytes)?;
+    Ok(bytes.len())
+}
+
+fn func_u16<F>(consts: &HashMap<String, String>,
+               vars: &mut HashMap<String, usize>,
+               args: &[parser::Expr],
+               offset: usize,
+               outf: &mut F) -> Result<usize>
+where
+    F: Seek + Read + Write,
+{
+    if args.len() != 1 {
+        bail!("Error number of arguments")
+    }
+
+    let value: u16 = evaluate(consts, vars, &args[0])?.try_into()?;
+    let bytes = value.to_le_bytes();
+    outf.seek(SeekFrom::Start(offset.try_into()?))?;
+    let _ = outf.write(&bytes)?;
+    Ok(bytes.len())
+}
+
+fn func_u8<F>(consts: &HashMap<String, String>,
+              vars: &mut HashMap<String, usize>,
+              args: &[parser::Expr],
+              offset: usize,
+              outf: &mut F) -> Result<usize>
+where
+    F: Seek + Read + Write,
+{
+    if args.len() != 1 {
+        bail!("Error number of arguments")
+    }
+
+    let value: u8 = evaluate(consts, vars, &args[0])?.try_into()?;
+    let bytes = value.to_le_bytes();
+    outf.seek(SeekFrom::Start(offset.try_into()?))?;
+    let _ = outf.write(&bytes)?;
+    Ok(bytes.len())
 }
 
