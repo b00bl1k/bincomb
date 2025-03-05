@@ -4,7 +4,7 @@ use anyhow::{anyhow, bail, Result};
 use crate::lexer::Token;
 
 pub enum Expr {
-    Statement { offset: Box<Expr>, variable: String, func: Box<Expr> },
+    Statement { offset: Box<Expr>, var_name: String, func: Box<Expr> },
     Binary { op: Token, left: Box<Expr>, right: Box<Expr> },
     Call { callee: String, args: Vec<Expr> },
     Variable(String),
@@ -99,7 +99,7 @@ impl<'a> Parser<'a> {
 
         Ok(Expr::Statement {
             offset: Box::new(offset),
-            variable: var_name,
+            var_name: var_name,
             func: Box::new(func),
         })
     }
@@ -191,10 +191,10 @@ impl fmt::Display for Expr {
             },
             Expr::Statement {
                 offset,
-                variable,
+                var_name,
                 func,
             } => {
-                write!(f, "{offset}:{variable}:{func}")
+                write!(f, "{offset}:{var_name}:{func}")
             },
             Expr::Call {
                 callee,

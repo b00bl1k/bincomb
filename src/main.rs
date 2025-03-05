@@ -68,6 +68,8 @@ fn main() -> Result<()>
             }
         }
     }
+
+    println!("Successfully written.");
     Ok(())
 }
 
@@ -140,55 +142,24 @@ fn evaluate(consts: &HashMap<String, String>,
 }
 
 fn interpret<F>(consts: &HashMap<String, String>,
-                vars: &mut HashMap<String, usize>, outf: &mut F,
+                vars: &mut HashMap<String, usize>,
+                outf: &mut F,
                 expr: parser::Expr) -> Result<()>
 where
     F: Seek + Read + Write,
 {
-    if let parser::Expr::Statement {offset, variable, func} = expr {
+    if let parser::Expr::Statement {offset, var_name, func} = expr {
         let pos = evaluate(consts, vars, &offset)?;
 
         if let parser::Expr::Call {callee, args} = *func {
-            if callee == "file" {
-                if args.len() != 1 {
-                    bail!("Error number of arguments");
-                }
-                let path = match &args[0] {
-                    parser::Expr::Str(path) => path,
-                    parser::Expr::Const(name) => consts.get(name)
-                        .ok_or(anyhow!("Undefined constant {name}"))?,
-                    _ => bail!("Expected string or constant")
-                };
-                let f = File::open(path)
-                    .with_context(
-                        || format!("Could not open file {path}")
-                    )?;
-                let mut reader = BufReader::new(f);
-                outf.seek(SeekFrom::Start(pos.try_into()?))?;
-                let length = copy(&mut reader, outf)?.try_into()?;
+            let length = match callee.as_str() {
+                "file" => func_file(consts, &args, pos, outf)?,
+                "crc16" => func_crc16(consts, vars, &args, pos, outf)?,
+                _ => bail!("Unknown function name '{callee}'")
+            };
 
-                add_variables(vars, &variable, pos, length)?;
-            }
-            else if callee == "crc16" {
-                if args.len() != 2 {
-                    bail!("Error number of arguments")
-                }
-                let addr = evaluate(consts, vars, &args[0])?;
-                let length = evaluate(consts, vars, &args[1])?;
-
-                outf.seek(SeekFrom::Start(addr.try_into()?))?;
-                let mut bin = vec![0; length.try_into()?];
-                outf.read(&mut bin)?;
-
-                let crc = crc::Crc::<u16>::new(&crc::CRC_16_IBM_SDLC);
-                let result = crc.checksum(&bin).to_le_bytes();
-                outf.seek(SeekFrom::Start(pos.try_into()?))?;
-                let _ = outf.write(&result[..2])?;
-
-                add_variables(vars, &variable, pos, length)?;
-            }
-            else {
-                bail!("Unknown function name '{}'", callee);
+            if var_name != "_" {
+                add_variables(vars, &var_name, pos, length)?;
             }
 
             return Ok(());
@@ -200,16 +171,67 @@ where
 fn add_variables(vars: &mut HashMap<String, usize>, name: &str, addr: usize,
                  size: usize) -> Result<()>
 {
-    if name != "_" {
-        let key_start = format!("{name}.start");
-        if vars.contains_key(&key_start) {
-            bail!("Variables with name '{name}' already defined");
-        }
-
-        vars.insert(key_start, addr);
-        vars.insert(format!("{name}.size"), size);
-        vars.insert(format!("{name}.end"), addr + size);
+    let key_start = format!("{name}.start");
+    if vars.contains_key(&key_start) {
+        bail!("Variables with name '{name}' already defined");
     }
+
+    vars.insert(key_start, addr);
+    vars.insert(format!("{name}.size"), size);
+    vars.insert(format!("{name}.end"), addr + size);
 
     Ok(())
 }
+
+fn func_file<F>(consts: &HashMap<String, String>,
+                args: &[parser::Expr],
+                offset: usize,
+                outf: &mut F) -> Result<usize>
+where
+    F: Seek + Read + Write,
+{
+    if args.len() != 1 {
+        bail!("Error number of arguments");
+    }
+    let path = match &args[0] {
+        parser::Expr::Str(value) => value,
+        parser::Expr::Const(name) => consts.get(name)
+            .ok_or(anyhow!("Undefined constant {name}"))?,
+        _ => bail!("Expected string or constant")
+    };
+    let f = File::open(path)
+        .with_context(
+            || format!("Could not open file {path}")
+        )?;
+    let mut reader = BufReader::new(f);
+    outf.seek(SeekFrom::Start(offset.try_into()?))?;
+    let length = copy(&mut reader, outf)?.try_into()?;
+    Ok(length)
+}
+
+fn func_crc16<F>(consts: &HashMap<String, String>,
+                 vars: &mut HashMap<String, usize>,
+                 args: &[parser::Expr],
+                 offset: usize,
+                 outf: &mut F) -> Result<usize>
+where
+    F: Seek + Read + Write,
+{
+    if args.len() != 2 {
+        bail!("Error number of arguments")
+    }
+    let addr = evaluate(consts, vars, &args[0])?;
+    let length = evaluate(consts, vars, &args[1])?;
+
+    outf.seek(SeekFrom::Start(addr.try_into()?))?;
+    let mut bin = vec![0; length.try_into()?];
+    outf.read(&mut bin)?;
+
+    let crc = crc::Crc::<u16>::new(&crc::CRC_16_IBM_SDLC);
+    let result = crc.checksum(&bin).to_le_bytes();
+    outf.seek(SeekFrom::Start(offset.try_into()?))?;
+    let _ = outf.write(&result[..2])?;
+
+    Ok(length)
+}
+
